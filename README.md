@@ -10,7 +10,7 @@ The bot uses long polling: it asks Telegram for new messages, so it needs no pub
 
 - Without an AI key it echoes what you send, so you can see it working first.
 - With `OPENAI_API_KEY` set it chats with the model, keeping the last 20 messages of each chat as context.
-- A missing or wrong token doesn't crash-loop the service: the bot waits and says in its logs what to fix.
+- A missing or wrong token, an `@username` in the allowlist or Telegram being unreachable at start doesn't crash-loop the service: the bot waits or retries and says in its logs what to fix.
 
 ## Common Use Cases
 
@@ -47,7 +47,7 @@ The bot uses long polling: it asks Telegram for new messages, so it needs no pub
 
 Change the bot's personality with `SYSTEM_PROMPT`.
 
-**Lock it down:** anyone who finds your bot can use it, and your AI key pays for it. Send `/id` to the bot, then put your ID (comma-separated for several people) in `ALLOWED_USER_IDS`.
+**Lock it down:** anyone who finds your bot can use it, and your AI key pays for it. Send `/id` to the bot, then put your numeric ID (comma-separated for several people) in `ALLOWED_USER_IDS`. An entry that isn't a number is ignored, and if none are numbers the bot answers nobody until you fix it.
 
 **Make it yours:** eject the template in the service's settings to get your own copy of the repo. Add handlers in `main()` in `bot.py`; every push redeploys.
 

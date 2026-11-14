@@ -11,7 +11,7 @@ from collections import defaultdict, deque
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import InvalidToken
+from telegram.error import Conflict, InvalidToken, NetworkError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
@@ -24,13 +24,29 @@ AI_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 AI_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 AI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant in a Telegram chat. Keep answers short.")
-ALLOWED = {int(x) for x in os.getenv("ALLOWED_USER_IDS", "").replace(",", " ").split()}
+
+def parse_ids(raw: str) -> tuple[set[int], list[str]]:
+    """Numeric IDs, plus whatever else was typed (an @username, a typo)."""
+    ids, bad = set(), []
+    for part in raw.replace(",", " ").replace(";", " ").split():
+        try:
+            ids.add(int(part))
+        except ValueError:
+            bad.append(part)
+    return ids, bad
+
+
+ALLOWED, BAD_IDS = parse_ids(os.getenv("ALLOWED_USER_IDS", ""))
+# An allowlist that held only bad entries locks the bot instead of opening it to everyone.
+LOCKED = bool(BAD_IDS) and not ALLOWED
 
 # Last 20 messages per chat, in memory: lost on redeploy, which suits a starter.
 history: dict[int, deque] = defaultdict(lambda: deque(maxlen=20))
 
 
 def allowed(update: Update) -> bool:
+    if LOCKED:
+        return False
     return not ALLOWED or (update.effective_user and update.effective_user.id in ALLOWED)
 
 
@@ -87,6 +103,13 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(answer[i:i + 4096])
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if isinstance(context.error, Conflict):  # retried by the library; one line instead of a traceback
+        log.error("Another copy of this bot is polling the same token. Stop it, or give this one its own token.")
+        return
+    log.error("Update failed", exc_info=context.error)
+
+
 def idle(reason: str) -> None:
     # A bot that exits on a bad token crash-loops and shows as a failed deploy.
     # Stay up with a clear log line; the fix is a variable change and a redeploy.
@@ -96,6 +119,9 @@ def idle(reason: str) -> None:
 
 
 def main() -> None:
+    if BAD_IDS:
+        log.error("ALLOWED_USER_IDS takes numeric IDs; ignoring %s. Send /id to the bot for yours.%s",
+                  ", ".join(BAD_IDS), " Nobody can chat until it holds one." if LOCKED else "")
     if not TOKEN:
         idle("TELEGRAM_BOT_TOKEN is empty.")
     app = Application.builder().token(TOKEN).build()
@@ -105,13 +131,21 @@ def main() -> None:
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CallbackQueryHandler(button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    app.add_error_handler(on_error)
     log.info("Starting (%s, %s)", f"AI: {AI_MODEL}" if AI_KEY else "echo mode",
-             f"{len(ALLOWED)} allowed users" if ALLOWED else "open to everyone")
-    try:
-        # drop_pending_updates: skip messages queued while the bot was down
-        app.run_polling(drop_pending_updates=True)
-    except InvalidToken:
-        idle("Telegram rejected TELEGRAM_BOT_TOKEN.")
+             "locked" if LOCKED else f"{len(ALLOWED)} allowed users" if ALLOWED else "open to everyone")
+    delay = 5
+    while True:
+        try:
+            # drop_pending_updates: skip messages queued while the bot was down
+            app.run_polling(drop_pending_updates=True, close_loop=False)
+            return
+        except InvalidToken:
+            idle("Telegram rejected TELEGRAM_BOT_TOKEN.")
+        except NetworkError as e:  # Telegram unreachable at startup: wait it out instead of crash-looping
+            log.warning("Can't reach Telegram (%s); retrying in %d s.", e, delay)
+            time.sleep(delay)
+            delay = min(delay * 2, 300)
 
 
 if __name__ == "__main__":
