@@ -26,7 +26,7 @@ API_URL = "https://api.twelvedata.com/time_series"
 TELEGRAM_URL = f"https://api.telegram.org/bot{TOKEN}"
 
 last_checked_candle = None
-
+# Gold Precision Signals - deployment update
 
 def send_telegram(message):
     response = httpx.post(
